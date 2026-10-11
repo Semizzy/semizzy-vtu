@@ -62,7 +62,7 @@ jobs:
         run: |
           node -e "const a=require('./npm-audit.json'); const v=a.metadata?.vulnerabilities; if (!v || v.total !== 0) { console.error('npm audit is not clean:', v); process.exit(1); }"
           php -r '$a=json_decode(file_get_contents("composer-audit.json"), true); if (!is_array($a) || !empty($a["advisories"]) || !empty($a["abandoned"])) { fwrite(STDERR, "Composer audit is not clean\n"); exit(1); }'
-      - name: Commit lockfiles and switch all CI workflows to reproducible installs
+      - name: Commit lockfiles and switch compatible CI installs to npm ci
         env:
           GH_TOKEN: ${{ secrets.LOCKFILE_MAINTENANCE_TOKEN }}
           TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
@@ -73,12 +73,17 @@ jobs:
           fi
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
           helper = Path('.github/workflows/resolve-dependency-lockfiles.yml')
           for path in Path('.github/workflows').glob('*.yml'):
               if path == helper:
                   continue
               original = path.read_text()
-              updated = original.replace('npm install', 'npm ci')
+              # Replace only plain npm install commands; leave lockfile-generation
+              # commands and installs with flags untouched.
+              updated = re.sub(r'(?m)^(\s*(?:-\s*)?run:\s*)npm install\s*$', r'\1npm ci', original)
+              updated = re.sub(r'(?m)^(\s*)npm install\s*$', r'\1npm ci', updated)
               if updated != original:
                   path.write_text(updated)
           PY
