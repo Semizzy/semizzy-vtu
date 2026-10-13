@@ -87,7 +87,7 @@ jobs:
           PY
       - name: Commit lockfiles, reproducible CI installs, and production assets
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.WORKFLOW_WRITE_TOKEN }}
           TARGET_BRANCH: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
         run: |
           git add -f composer.lock package-lock.json public/build .github/workflows
