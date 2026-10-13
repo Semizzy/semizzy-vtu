@@ -1,0 +1,99 @@
+name: Resolve dependency lockfiles and refresh reproducible CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/resolve-dependency-lockfiles.yml'
+      - 'composer.json'
+      - 'package.json'
+      - 'resources/css/app.css'
+      - 'vite.config.ts'
+      - 'tailwind.config.js'
+      - 'postcss.config.js'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dependency-lockfiles-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'maintenance/dependency-lockfiles-2026-10-11')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
+          persist-credentials: true
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: composer:v2
+          extensions: mbstring, pdo_mysql, pdo_sqlite, sqlite3
+          coverage: none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Resolve Composer dependencies and create lockfile
+        run: composer update --no-interaction --prefer-dist --no-progress
+      - name: Validate Composer lockfile and install from it
+        run: |
+          composer validate --strict
+          composer install --no-interaction --prefer-dist --no-progress
+      - name: Resolve npm dependencies and create lockfile
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Verify reproducible npm installation
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm run build
+      - name: Capture dependency security audits for review
+        if: always()
+        run: |
+          composer audit --locked --format=json > composer-audit.json || true
+          npm audit --json > npm-audit.json || true
+      - name: Upload lockfiles, audit reports, and production build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semizzy-dependency-lockfiles-and-audits
+          path: |
+            composer.lock
+            package-lock.json
+            composer-audit.json
+            npm-audit.json
+            public/build
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Replace plain npm install with npm ci in CI workflows
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          helper = Path('.github/workflows/resolve-dependency-lockfiles.yml')
+          for path in Path('.github/workflows').glob('*.yml'):
+              if path == helper:
+                  continue
+              original = path.read_text()
+              updated = re.sub(r'(?m)^(\s*(?:-\s*)?run:\s*)npm install\s*$', r'\1npm ci', original)
+              updated = re.sub(r'(?m)^(\s*)npm install\s*$', r'\1npm ci', updated)
+              if updated != original:
+                  path.write_text(updated)
+          PY
+      - name: Commit lockfiles, reproducible CI installs, and production assets
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_WRITE_TOKEN }}
+          TARGET_BRANCH: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
+        run: |
+          git add -f composer.lock package-lock.json public/build .github/workflows
+          if git diff --cached --quiet; then
+            echo "No dependency, workflow, or build changes to commit."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "build: lock dependencies and use reproducible CI installs"
+          git push origin "HEAD:${TARGET_BRANCH}"
